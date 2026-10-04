@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>InstaShare</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.1.1/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.1.1/js/bootstrap.bundle.min.js"></script>
+</head>
+<body class="bg-light min-vh-100 d-flex py-5">
+
+<div class="container">
+    <div class="row justify-content-center">
+        <div class="col-lg-6 col-md-8 col-12">
+            <div class="card shadow-sm">
+                <div class="card-body p-4">
+                    <h1 class="h3 mb-1">InstaShare</h1>
+                    <p class="text-muted small mb-4">Online clipboard that runs on all your devices.</p>
+
+                    <form>
+                        <label for="inputShareSpaceId" class="form-label fw-semibold">Enter the ShareSpace ID to
+                            join</label>
+                        <div class="input-group mb-1">
+                            <span class="input-group-text">#</span>
+                            <input type="text" class="form-control" placeholder="ShareSpace ID" id="inputShareSpaceId">
+                            <button type="button" class="btn btn-primary" id="btnEnter" onclick="enterSpace()">Enter
+                            </button>
+                        </div>
+                    </form>
+
+                    <div class="alert alert-secondary mt-3 mb-4 py-2" role="status" id="spaceStatus">You haven't joined
+                        any share space yet
+                    </div>
+
+                    <div class="border-top pt-4">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap mb-3">
+                            <h2 class="h6 mb-0">Space <span class="badge bg-primary" id="labelShareSpaceId">$shareSpaceId</span>
+                            </h2>
+                            <small class="text-muted">Last updated on <span id="timeLastUpdate">$dateTime</span></small>
+                        </div>
+
+                        <textarea class="form-control mb-3" id="textDisplayEdit" rows="6"
+                                  placeholder="Enter the text you wish to share across all devices" onfocus="startEditing()"></textarea>
+
+                        <div class="d-flex gap-2 justify-content-end">
+<!--                            <button type="button" class="btn btn-outline-primary" id="btnEdit">Edit</button>-->
+                            <button type="button" class="btn btn-success" id="btnSubmit" onclick="save()">Submit
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+</body>
+
+<script>
+    // Global variables
+    let spaceId;
+    let contentSaved;
+    let shouldFlush = false;  // This happens when page is stuck by modal
+
+    // Cached elements
+    let page = {
+        alertSpaceStatus: document.getElementById("spaceStatus"),
+        labelShareSpaceId: document.getElementById("labelShareSpaceId"),
+        labelLastTimeUpdated: document.getElementById("timeLastUpdate"),
+        textDisplayEdit: document.getElementById("textDisplayEdit")
+    }
+
+    // Flush the page when necessary
+    setInterval(async () => {await flush()}, 2);
+
+    // ===== Requests =====
+    async function enterSpace() {
+        spaceId = document.getElementById("inputShareSpaceId").value;
+
+        if (!spaceId) return;
+        const res = await fetch("/api/spaces/verify/" + spaceId);
+
+        if (await res.json()) {
+            // Connect and load
+            page.alertSpaceStatus.innerHTML = "Getting you connected to Space " + spaceId;
+            page.labelShareSpaceId.innerHTML = spaceId;
+            await loadContent();
+        } else {
+            // Confirm space creation
+            const doCreate = confirm("There is no existing Space " + spaceId + ". Would you like to create a new one?")
+            if (doCreate) {
+                await create()
+            }
+        }
+
+        contentSaved = false;
+        // shouldFlush = true;
+    }
+
+    async function create() {
+        // Send the post request
+        const res = await fetch("/api/spaces/create/" + spaceId, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({})
+        })
+        const creationResult = await res.json()
+        console.log(creationResult)
+        if (creationResult.success) {
+            // todo creation success message + show content
+            alert("Space " + spaceId + " has been created. ")
+            page.alertSpaceStatus.innerHTML = "Getting you connected to Space " + spaceId;
+
+            const spaceData = await (await fetch("/api/spaces/" + spaceId)).json()
+            await loadContent(spaceData)
+        } else {
+            alert("Cannot create space.")
+        }
+
+        contentSaved = false;
+    }
+
+    async function loadContent(spaceData = null) {
+        if (spaceData == null) {
+            const res = await fetch("/api/spaces/" + spaceId);
+            // if (res.status === 404) return handleSpaceLost();
+            spaceData = await res.json();
+        }
+        spaceId = spaceData.space_id;
+        console.log("New space id: " + spaceId);
+        page.labelShareSpaceId.innerHTML = spaceId;
+        page.labelLastTimeUpdated.innerHTML = spaceData.last_updated;
+        page.textDisplayEdit.value = spaceData.content;
+    }
+
+    async function save() {
+        const content = document.getElementById("textDisplayEdit").value;
+        const res = await fetch("/api/spaces/edit/" + spaceId, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({content})
+        })
+        // if (res.status === 404) return handleSpaceLost();
+        contentSaved = true;
+        await loadContent()
+    }
+
+    function startEditing() {
+        contentSaved = false;
+    }
+
+    // ===== Page rendering =====
+    async function flush () {
+        if (!contentSaved) return;
+        // todo version conflict handling
+        await loadContent()
+        console.log("Flushed!")
+    }
+
+    function updateStatus(text, type) {
+        switch (type) {
+            case "info":
+        }
+    }
+</script>
+</html>
