@@ -35,15 +35,17 @@
                     <div class="border-top pt-4">
                         <div class="d-flex justify-content-between align-items-center flex-wrap mb-3">
                             <h2 class="h6 mb-0">Space <span class="badge bg-primary" id="labelShareSpaceId">$shareSpaceId</span>
+                                <span id="labelSaved">$saved</span>
                             </h2>
                             <small class="text-muted">Last updated on <span id="timeLastUpdate">$dateTime</span></small>
                         </div>
 
                         <textarea class="form-control mb-3" id="textDisplayEdit" rows="6"
-                                  placeholder="Enter the text you wish to share across all devices" onfocus="startEditing()"></textarea>
+                                  placeholder="Enter the text you wish to share across all devices"
+                                  oninput="startEditing()"></textarea>
 
                         <div class="d-flex gap-2 justify-content-end">
-<!--                            <button type="button" class="btn btn-outline-primary" id="btnEdit">Edit</button>-->
+                            <!--                            <button type="button" class="btn btn-outline-primary" id="btnEdit">Edit</button>-->
                             <button type="button" class="btn btn-success" id="btnSubmit" onclick="save()">Submit
                             </button>
                         </div>
@@ -52,115 +54,12 @@
             </div>
         </div>
     </div>
-</div>
 
+    <div class="jumbotron text-center" style="margin-bottom:0">
+        <p>SSE Status: <span id="sseStatus">$subscribed</span></p>
+    </div>
+</div>
 </body>
 
-<script>
-    // Global variables
-    let spaceId;
-    let contentSaved;
-    let shouldFlush = false;  // This happens when page is stuck by modal
-
-    // Cached elements
-    let page = {
-        alertSpaceStatus: document.getElementById("spaceStatus"),
-        labelShareSpaceId: document.getElementById("labelShareSpaceId"),
-        labelLastTimeUpdated: document.getElementById("timeLastUpdate"),
-        textDisplayEdit: document.getElementById("textDisplayEdit")
-    }
-
-    // Flush the page when necessary
-    setInterval(async () => {await flush()}, 2);
-
-    // ===== Requests =====
-    async function enterSpace() {
-        spaceId = document.getElementById("inputShareSpaceId").value;
-
-        if (!spaceId) return;
-        const res = await fetch("/api/spaces/verify/" + spaceId);
-
-        if (await res.json()) {
-            // Connect and load
-            page.alertSpaceStatus.innerHTML = "Getting you connected to Space " + spaceId;
-            page.labelShareSpaceId.innerHTML = spaceId;
-            await loadContent();
-        } else {
-            // Confirm space creation
-            const doCreate = confirm("There is no existing Space " + spaceId + ". Would you like to create a new one?")
-            if (doCreate) {
-                await create()
-            }
-        }
-
-        contentSaved = false;
-        // shouldFlush = true;
-    }
-
-    async function create() {
-        // Send the post request
-        const res = await fetch("/api/spaces/create/" + spaceId, {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({})
-        })
-        const creationResult = await res.json()
-        console.log(creationResult)
-        if (creationResult.success) {
-            // todo creation success message + show content
-            alert("Space " + spaceId + " has been created. ")
-            page.alertSpaceStatus.innerHTML = "Getting you connected to Space " + spaceId;
-
-            const spaceData = await (await fetch("/api/spaces/" + spaceId)).json()
-            await loadContent(spaceData)
-        } else {
-            alert("Cannot create space.")
-        }
-
-        contentSaved = false;
-    }
-
-    async function loadContent(spaceData = null) {
-        if (spaceData == null) {
-            const res = await fetch("/api/spaces/" + spaceId);
-            // if (res.status === 404) return handleSpaceLost();
-            spaceData = await res.json();
-        }
-        spaceId = spaceData.space_id;
-        console.log("New space id: " + spaceId);
-        page.labelShareSpaceId.innerHTML = spaceId;
-        page.labelLastTimeUpdated.innerHTML = spaceData.last_updated;
-        page.textDisplayEdit.value = spaceData.content;
-    }
-
-    async function save() {
-        const content = document.getElementById("textDisplayEdit").value;
-        const res = await fetch("/api/spaces/edit/" + spaceId, {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({content})
-        })
-        // if (res.status === 404) return handleSpaceLost();
-        contentSaved = true;
-        await loadContent()
-    }
-
-    function startEditing() {
-        contentSaved = false;
-    }
-
-    // ===== Page rendering =====
-    async function flush () {
-        if (!contentSaved) return;
-        // todo version conflict handling
-        await loadContent()
-        console.log("Flushed!")
-    }
-
-    function updateStatus(text, type) {
-        switch (type) {
-            case "info":
-        }
-    }
-</script>
+<script src="/static/clipboardShare.js"></script>
 </html>

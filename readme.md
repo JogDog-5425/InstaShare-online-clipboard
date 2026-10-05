@@ -7,4 +7,4 @@
 * **前端** - Bootstrap5
 
 ## 项目配置
-请在确保本机安装Python环境和uv后
+请在确保本机安装Python环境和uv后，使用```uv sync```搭建环境
