@@ -1,5 +1,6 @@
 import json
 import asyncio
+import traceback
 from asyncio import Queue
 from datetime import datetime
 
@@ -10,6 +11,9 @@ from starlette.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
+from starlette.websockets import WebSocket, WebSocketState
+
+from app.connection import ConnectionManager
 from app.data import SpaceData, OperationHint
 
 app = FastAPI()
@@ -26,15 +30,16 @@ print("index exists =", (STATIC_DIR / "index.html").exists())
 # Runtime space data todo move into Sqlite
 spaces = dict()
 
-# SSE Event queues
-# We use spaceId->list(subscriber) structure to ensure subscribers are informed respectively
+# [Obsolete] SSE Event queues
+# We use space_id->list(subscriber) structure to ensure subscribers are informed respectively
 # Queue is how we keep track of the subscribers
 event_queues: dict[str, list[Queue]] = dict()
 
-class UpdateRequest(BaseModel):
-    content: str
+# WebSocket Connection manager
+connections = ConnectionManager()
 
 
+# ===== HTTP Requests =====
 @app.get("/", response_class=HTMLResponse)
 def index():
     return FileResponse(STATIC_DIR / "index.html")
@@ -45,30 +50,25 @@ def verify_space(space_id: str) -> bool:
     return space_id in spaces.keys()
 
 
-@app.post("/api/spaces/create/{space_id}")
 def create_space(space_id: str) -> OperationHint:
     if space_id in spaces.keys(): return OperationHint(success=False, message="Space already exists")
     spaces[space_id] = SpaceData(space_id = space_id, last_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    event_queues[space_id] = []  # No subscribers yet; each SSE connection registers its own queue
+
     print(f"Space {space_id} is initialized. ")
     return OperationHint(success=True, message="Space created successfully")
 
 
-@app.post("/api/spaces/edit/{space_id}")
-async def edit_space(space_id: str, content: UpdateRequest) -> SpaceData:
+async def edit_space(space_id: str, content: str) -> SpaceData:
     if space_id not in spaces:
         raise HTTPException(status_code=404, detail=f"Space {space_id} not found")
     old_data = spaces[space_id]
     try:
         spaces[space_id] = SpaceData(
-            space_id = space_id, content= content.content, last_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            space_id = space_id, content= content, last_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             version=old_data.version
         )
         spaces[space_id].version += 1
-        # Publish: deliver a copy to every subscriber queue of this space
-        for subscriber_queue in event_queues.get(space_id, []):
-            subscriber_queue.put_nowait(spaces[space_id].content)
-        # return OperationHint(success=True, message="Space edited successfully")
+
         return spaces[space_id]
     except Exception as e:
         return SpaceData()
@@ -82,39 +82,76 @@ def get_space(space_id: str) -> SpaceData:
     return spaces[space_id]
 
 
-@app.get("/api/spaces/{space_id}/events")
-async def sse_events(space_id: str):
-    if space_id not in spaces:
-        raise HTTPException(status_code=404, detail=f"Space {space_id} not found")
-    # Subscribe: this connection gets its own queue and registers it to the space
-    subscriber_queue = asyncio.Queue()
-    event_queues.setdefault(space_id, []).append(subscriber_queue)
+# ===== WebSocket Solution =====
+@app.websocket("/api/spaces/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
 
-    # Send events only when this queue receives a message
-    async def event_stream():
-        try:
-            while True:
-                await subscriber_queue.get()
-                print(f"Should flush: {space_id}")
-                # An SSE event needs a data field; an event-only record is
-                # ignored by the browser's EventSource parser.
-                yield "event: contentModified\ndata: updated\n\n"  # Hint: ‘data’ is mandatory for SSE parsing
-        finally:
-            # Unsubscribe on disconnect to avoid leaking queues
+    # To keep the connection alive
+    connection_active = True
+    heartbeat_task = None
+
+    async def send_heartbeat():
+        """Send periodic heartbeats to keep connection alive."""
+        while connection_active:
             try:
-                event_queues[space_id].remove(subscriber_queue)
-            except (KeyError, ValueError):
-                pass
+                await asyncio.sleep(15)
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    # Send a ping command
+                    await websocket.send_json({"type": "ping"})
+            except Exception as exception:
+                traceback.print_exc()
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    try:
+        heartbeat_task = asyncio.create_task(send_heartbeat())
+
+        while connection_active:
+            try:
+                # ===== Real logic begins =====
+                message = await asyncio.wait_for(websocket.receive(), timeout=30)
+
+                if message.get("type") == "websocket.disconnect":
+                    print("Client disconnected gracefully")
+                    connection_active = False
+                    break
+
+                elif message.get("type") == "websocket.receive":
+                    # Parse the JSON
+                    data = json.loads(str(message.get("text")))
+                    if data["type"] == "create":
+                        print("Received create request")
+                        create_space(data["space_id"]).model_dump()
+
+                        await connections.connect(websocket, data["space_id"])
+                        # await websocket.send_json({"type": "response", "": "", "data":create_space(data["space_id"]).model_dump()})
+                    elif data["type"] == "enter":
+                        await connections.connect(websocket, data["space_id"])
+                    elif data["type"] == "sync":
+                        print("Received sync request")
+                        await connections.send_json(data["space_id"], {
+                            "type": "update",
+                            "space_id": data["space_id"],
+                            "data": get_space(data["space_id"]).model_dump()
+                        })
+                    elif data["type"] == "edit":
+                        print("Received edit request")
+
+                        await edit_space(data["space_id"], data["data"])
+
+                        await connections.send_json(data["space_id"], {
+                            "type": "update",
+                            "space_id": data["space_id"],
+                            "data": get_space(data["space_id"]).model_dump()
+                        })
+                        print("Informing other clients of this update")
+
+            except Exception as e:
+                print(datetime.now().strftime("%H:%M:%S"))
+                traceback.print_exc()
+
+    except Exception as ex:
+        print(ex)
+
 
 
 if __name__ == '__main__':
