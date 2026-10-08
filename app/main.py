@@ -6,7 +6,6 @@ from datetime import datetime
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from starlette.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -14,21 +13,23 @@ from pathlib import Path
 from starlette.websockets import WebSocket, WebSocketState
 
 from app.connection import ConnectionManager
-from app.data import SpaceData, OperationHint
+from app.data import SpaceData, OperationHint, SpaceDataAccessor
 
 app = FastAPI()
 
 # Resolve path related problems
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR.parent / "static"
+DB_PATH = BASE_DIR.parent / "data" / "clipboard_data.db"
 # Make sure static files can be referenced correctly
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 print("STATIC_DIR =", STATIC_DIR)
 print("index exists =", (STATIC_DIR / "index.html").exists())
 
-# Runtime space data todo move into Sqlite
-spaces = dict()
+# Space data
+# spaces = dict()
+clipboard_db = SpaceDataAccessor(DB_PATH)
 
 # [Obsolete] SSE Event queues
 # We use space_id->list(subscriber) structure to ensure subscribers are informed respectively
@@ -47,39 +48,27 @@ def index():
 
 @app.get("/api/spaces/verify/{space_id}")
 def verify_space(space_id: str) -> bool:
-    return space_id in spaces.keys()
+    # return space_id in spaces.keys()
+    return clipboard_db.exists(space_id)
 
 
 def create_space(space_id: str) -> OperationHint:
-    if space_id in spaces.keys(): return OperationHint(success=False, message="Space already exists")
-    spaces[space_id] = SpaceData(space_id = space_id, last_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if clipboard_db.create(space_id):
+        return OperationHint(success=True, message="Space created successfully")
+    else:
+        return OperationHint(success=False, message="Space already exists")
 
-    print(f"Space {space_id} is initialized. ")
-    return OperationHint(success=True, message="Space created successfully")
 
-
-async def edit_space(space_id: str, content: str) -> SpaceData:
-    if space_id not in spaces:
-        raise HTTPException(status_code=404, detail=f"Space {space_id} not found")
-    old_data = spaces[space_id]
-    try:
-        spaces[space_id] = SpaceData(
-            space_id = space_id, content= content, last_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            version=old_data.version
-        )
-        spaces[space_id].version += 1
-
-        return spaces[space_id]
-    except Exception as e:
-        return SpaceData()
-        # return OperationHint(success=False, message=f"Error while updating space {e}")
+def edit_space(space_id: str, content: str) -> SpaceData | None:
+    return clipboard_db.edit(space_id, content)
 
 
 @app.get("/api/spaces/{space_id}")
-def get_space(space_id: str) -> SpaceData:
-    if space_id not in spaces:
-        raise HTTPException(status_code=404, detail=f"Space {space_id} not found")
-    return spaces[space_id]
+def get_space(space_id: str) -> SpaceData | None:
+    # if space_id not in spaces:
+    #     raise HTTPException(status_code=404, detail=f"Space {space_id} not found")
+    # return spaces[space_id]
+    return clipboard_db.get_space(space_id)
 
 
 # ===== WebSocket Solution =====
@@ -128,22 +117,29 @@ async def websocket_endpoint(websocket: WebSocket):
                         await connections.connect(websocket, data["space_id"])
                     elif data["type"] == "sync":
                         print("Received sync request")
-                        await connections.send_json(data["space_id"], {
-                            "type": "update",
-                            "space_id": data["space_id"],
-                            "data": get_space(data["space_id"]).model_dump()
-                        })
+                        space_data = clipboard_db.get_space(data["space_id"])
+                        if space_data is not None:
+                            await connections.send_json(data["space_id"], {
+                                "type": "update",
+                                "space_id": data["space_id"],
+                                "data": space_data.model_dump()
+                            })
+                        else:
+                            print("We cannot obtain the space data, therefore synchonization fails")
                     elif data["type"] == "edit":
                         print("Received edit request")
 
-                        await edit_space(data["space_id"], data["data"])
+                        space_data = edit_space(data["space_id"], data["data"])
 
-                        await connections.send_json(data["space_id"], {
-                            "type": "update",
-                            "space_id": data["space_id"],
-                            "data": get_space(data["space_id"]).model_dump()
-                        })
-                        print("Informing other clients of this update")
+                        if space_data is not None:
+                            await connections.send_json(data["space_id"], {
+                                "type": "update",
+                                "space_id": data["space_id"],
+                                "data": space_data.model_dump()
+                            })
+                            print("Informing other clients of this update")
+                        else:
+                            print("We cannot obtain the space data, therefore edit fails")
 
             except Exception as e:
                 print(datetime.now().strftime("%H:%M:%S"))

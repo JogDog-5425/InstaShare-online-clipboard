@@ -49,6 +49,7 @@ let wsConnected = false;
 let manualClose = false;
 
 function connectWebSocket() {
+    console.log("Trying to get connected");
     manualClose = false;
 
     const protocol = location.protocol === "https:" ? "wss" : "ws";
@@ -57,6 +58,9 @@ function connectWebSocket() {
     websocket.onopen = () => {
         wsConnected = true;
         reconnectAttempts = 0;
+        // if (!page.labelShareSpaceId.value) spaceId = page.labelShareSpaceId.value;
+        updateStatus(spaceId ? `Connected to space ${spaceId}`: "You haven't joined any share space yet",
+            spaceId ? "success": "secondary");
         page.labelConnectionStatus.textContent = "Connected";
         console.log("WebSocket opened");
 
@@ -73,6 +77,7 @@ function connectWebSocket() {
 
     websocket.onclose = () => {
         wsConnected = false;
+        updateStatus("You are now offline", "warning");
         page.labelConnectionStatus.textContent = "Disconnected";
 
         if (manualClose) return;  // Do not reconnect when connection is normal
