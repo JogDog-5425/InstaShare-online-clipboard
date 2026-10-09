@@ -28,11 +28,6 @@ htmlcov/
 *.log
 logs/
 
-*.db
-*.sqlite
-*.sqlite3
-data.db
-
 uploads/
 
 .DS_Store

@@ -1,42 +1,25 @@
 // ============ Global variables ============
-let spaceId;
+export let spaceId;
 let contentSaved = false;
 let readyForEdit = false;
-let shouldFlush = false;  // This happens when page is stuck by modal
+export let currentImageUrl = null;
 
 // Cached elements
-let page = {
+const page = {
     alertSpaceStatus: document.getElementById("spaceStatus"),
     labelShareSpaceId: document.getElementById("labelShareSpaceId"),
     labelLastTimeUpdated: document.getElementById("timeLastUpdate"),
     labelSaved: document.getElementById("labelSaved"),
     labelConnectionStatus: document.getElementById("connectionStatus"),
-    textDisplayEdit: document.getElementById("textDisplayEdit")
+    textDisplayEdit: document.getElementById("textDisplayEdit"),
+    preview: document.getElementById("imagePreview"),
+    btnCopy: document.getElementById("btnCopy"),
+    btnDownload: document.getElementById("btnDownload"),
 }
 
 
 // // Flush the page when necessary (obsolete)
 // setInterval(async () => {await flush()}, 2);
-
-
-// ============ EES ============
-// [Obsolete] Use SSE to update only when necessary
-let eventSource = null;
-
-function connectSSE(spaceId) {
-    console.log("connected")
-    page.labelConnectionStatus.innerHTML = "Subscribed";
-    eventSource = new EventSource("/api/spaces/" + spaceId + "/events")
-    eventSource.addEventListener("contentModified", flush)
-}
-
-function disconnectEES() {
-    if (!eventSource) return;
-    console.log("disconnected")
-    page.labelConnectionStatus.innerHTML = "Unsubscribed";
-    eventSource.close();
-    eventSource = null;
-}
 
 
 // ============ WebSocket ============
@@ -53,9 +36,11 @@ function connectWebSocket() {
     manualClose = false;
 
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    websocket = new WebSocket(`${protocol}://${location.host}/api/spaces/ws`);
+    const socket = new WebSocket(`${protocol}://${location.host}/api/spaces/ws`);
+    websocket = socket;
 
-    websocket.onopen = () => {
+    socket.onopen = () => {
+        if (websocket !== socket) return;
         wsConnected = true;
         reconnectAttempts = 0;
         // if (!page.labelShareSpaceId.value) spaceId = page.labelShareSpaceId.value;
@@ -67,16 +52,19 @@ function connectWebSocket() {
         // Rejoin the last space after a connection loss.
         if (spaceId) {
             readyForEdit = false;
-            websocket.send(JSON.stringify({type: "sync", "space_id": spaceId}));
+            socket.send(JSON.stringify({type: "enter", "space_id": spaceId}));
+            socket.send(JSON.stringify({type: "sync", "space_id": spaceId}));
         }
     };
 
-    websocket.onmessage = (eventData) => {
+    socket.onmessage = (eventData) => {
         onMessageReceived(eventData);
     };
 
-    websocket.onclose = () => {
+    socket.onclose = () => {
+        if (websocket !== socket) return;
         wsConnected = false;
+        websocket = null;
         updateStatus("You are now offline", "warning");
         page.labelConnectionStatus.textContent = "Disconnected";
 
@@ -84,8 +72,9 @@ function connectWebSocket() {
         tryReconnect();
     };
 
-    websocket.onerror = () => {
-        if (websocket) websocket.close();  // Make sure onclose is called (this should trigger reconnection)
+    socket.onerror = () => {
+        // onclose owns the reconnect path; closing this socket is enough.
+        socket.close();
     };
 }
 
@@ -107,12 +96,14 @@ function disconnectWebSocket() {
 }
 
 async function onMessageReceived(eventData) {
-    // console.log("Received websocket message");
+    console.log("Received websocket message");
     const message = JSON.parse(eventData.data);
 
     if (message.type === "update") {
         console.log("Should update");
         await loadContent(message.data);
+    } else if (message.type === "ping") {
+        return;
     } else if (message.type === "response") {
         console.log(`Status ${message.data.success} ${message.data.message}`);
     }
@@ -143,17 +134,33 @@ function unsubscribeWebSocketEvents() {
 
 connectWebSocket();
 window.addEventListener("pagehide", disconnectWebSocket);
+window.addEventListener("pageshow", (event) => {
+    if (event.persisted && !wsConnected) {
+        connectWebSocket();
+    }
+});
 
 
 // ============ Actions ============
+window.enterSpace = enterSpace;
+window.save = save;
+window.startEditing = startEditing;
 async function enterSpace() {
-    if (!wsConnected) return;
+    if (!wsConnected || !websocket) {
+        updateStatus("WebSocket is not connected yet", "warning");
+        return;
+    }
     readyForEdit = false;
     const id = document.getElementById("inputShareSpaceId").value;
 
     if (!id) return;
 
-    const res = await fetch("/api/spaces/verify/" + id);  // Get: Bool
+    const res = await fetch("/api/spaces/verify/" + encodeURIComponent(id));
+
+    if (!res.ok) {
+        updateStatus("Unable to verify that space", "danger");
+        return;
+    }
 
     if (await res.json()) {
         // Connect and load
@@ -208,6 +215,7 @@ function create() {
     //     alert("Cannot create space.")
     // }
     // Send request only
+    if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
     websocket.send(JSON.stringify({"type": "create", "space_id": spaceId}));
     console.log("Space created");
     // updateSaveStatus(true)
@@ -219,6 +227,7 @@ async function loadContent(spaceData) {
     //     // if (res.status === 404) return handleSpaceLost();
     //     spaceData = await res.json();
     // }
+    if (!spaceData) return;
     console.log("Should load content from " + JSON.stringify(spaceData));
 
     spaceId = spaceData.space_id;
@@ -227,12 +236,36 @@ async function loadContent(spaceData) {
     page.labelLastTimeUpdated.innerHTML = spaceData.last_updated;
     page.textDisplayEdit.value = spaceData.content;
 
+    showImage(spaceData.image || null);
+
     readyForEdit = true;
+}
+
+function showImage(url) {
+    if (!url) {
+        currentImageUrl = null;
+        page.preview.innerHTML = `<span class="text-muted">Image preview</span>`;
+        page.btnCopy.disabled = true;
+        page.btnDownload.disabled = true;
+        return;
+    }
+
+    // Older rows may contain an absolute server path instead of a public URL.
+    const filename = url.split(/[\\/]/).pop();
+    currentImageUrl = url.startsWith("/upload/") ? url : `/upload/${filename}`;
+
+    page.preview.innerHTML = `<img src="${currentImageUrl}" alt="Clipboard Image" />`;
+
+    page.btnCopy.disabled = false;
+    page.btnDownload.disabled = false;
 }
 
 async function save() {
     console.log(`Received save request on readyForEdit = ${readyForEdit}`);
-    if (!readyForEdit) return;
+    if (!readyForEdit || !websocket || websocket.readyState !== WebSocket.OPEN) {
+        updateStatus("WebSocket is not connected yet", "warning");
+        return;
+    }
 
     const content = page.textDisplayEdit.value;
     // const res = await fetch("/api/spaces/edit/" + spaceId, {
@@ -252,17 +285,6 @@ async function save() {
 function startEditing() {
     // contentSaved = false;
     updateSaveStatus(false)
-}
-
-
-// ============ Page rendering ============
-// [Obsolete]
-async function flush() {
-    // if (!contentSaved) return;
-    // todo version conflict handling
-    console.log("Content is now up to date!")
-    await loadContent()
-    console.log("Content is now up to date!")
 }
 
 

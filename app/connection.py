@@ -20,13 +20,16 @@ class ConnectionManager:
 
     async def _try_remove(self, websocket: WebSocket) -> None:
         async with self.lock:
-            if websocket in self.client_space_map:
-                old_space_id = self.client_space_map[websocket]
+            old_space_id = self.client_space_map.pop(websocket, None)
+            if old_space_id is None:
+                return
 
-                self.client_space_map.pop(websocket)
-                self.connections[old_space_id].remove(websocket)
+            clients = self.connections.get(old_space_id)
+            if clients is None:
+                return
 
-            if len(self.connections[old_space_id]):
+            clients.discard(websocket)
+            if not clients:
                 del self.connections[old_space_id]
 
 

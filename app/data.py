@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import datetime
+from email.mime import image
 
 from pydantic import BaseModel
 
@@ -9,6 +10,7 @@ class SpaceData(BaseModel):
     content: str = ""
     last_updated: str = ""
     version: int = 1  # For version control
+    image: str = ""
 
 
 class OperationHint(BaseModel):
@@ -20,6 +22,21 @@ class OperationHint(BaseModel):
 class SpaceDataAccessor:
     def __init__(self, db_path):
         self._path = db_path
+        self._init_db()
+
+    def _init_db(self):
+        from contextlib import closing
+        with closing(self._connect()) as con:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS data (
+                    space_id     TEXT(50) PRIMARY KEY,
+                    content      TEXT,
+                    last_updated TEXT(50),
+                    version      INTEGER,
+                    image        TEXT DEFAULT ''
+                )
+            """)
+            con.commit()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path)
@@ -28,7 +45,7 @@ class SpaceDataAccessor:
 
     def exists(self, space_id: str):
         connection = self._connect()
-        cursor = connection.execute("SELECT 1 FROM data WHERE space_id = ? LIMIT 1", (space_id, ))
+        cursor = connection.execute("SELECT 1 FROM data WHERE space_id = ? LIMIT 1", (space_id,))
 
         result = not cursor.fetchone() is None
         connection.close()
@@ -54,7 +71,7 @@ class SpaceDataAccessor:
         # if not self.exists(space_id): return None
         connection = self._connect()
 
-        cursor = connection.execute("SELECT * FROM data WHERE space_id = ?", (space_id, ))
+        cursor = connection.execute("SELECT * FROM data WHERE space_id = ?", (space_id,))
         row = cursor.fetchone()
 
         if not row:
@@ -79,7 +96,7 @@ class SpaceDataAccessor:
         connection.commit()
 
         # Version is currently not needed but still reserved for todo future version conflict resolution
-        cursor = connection.execute("SELECT version FROM data WHERE space_id = ?", (space_id, ))
+        cursor = connection.execute("SELECT version FROM data WHERE space_id = ?", (space_id,))
         version = cursor.fetchone()["version"]
 
         connection.close()
@@ -91,11 +108,27 @@ class SpaceDataAccessor:
             version=version
         )
 
+    def set_image(self, space_id: str, filepath: str) -> bool:
+        if not self.exists(space_id) or not filepath: return False
+
+        connection = self._connect()
+
+        last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        connection.execute(
+            "UPDATE data SET image = ?, last_updated = ? WHERE space_id = ?",
+            (filepath, last_updated, space_id))
+        connection.commit()
+
+        connection.close()
+
+        return True
+
     @staticmethod
     def row_to_space_data(row: sqlite3.Row) -> SpaceData:
         return SpaceData(
             space_id=row["space_id"],
             content=row["content"] or "",
             last_updated=row["last_updated"] or "",
-            version=row["version"] or 1
+            version=row["version"] or 1,
+            image=row["image"] or ""
         )
